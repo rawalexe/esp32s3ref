@@ -742,6 +742,7 @@ static void prvCoreMqttAgentConnectionTask( void * pvParameters )
                 }
                 else
                 {
+                    ESP_LOGE( TAG, "esp_tls_get_conn_sockfd failed." );
                     eMqttRet = MQTTBadParameter;
                 }
 
@@ -751,6 +752,10 @@ static void prvCoreMqttAgentConnectionTask( void * pvParameters )
                               "MQTT_Status: %s",
                               MQTT_Status_strerror( eMqttRet ) );
                 }
+            }
+            else
+            {
+                ESP_LOGE( TAG, "xTlsConnect failed." );
             }
 
             if( eMqttRet != MQTTSuccess )
@@ -798,11 +803,11 @@ static void prvCoreMqttAgentConnectionTask( void * pvParameters )
                             .cmdCompleteCallback = processLoopCompleteCallback,
                             .pCmdCompleteCallbackContext = ( void * ) xTaskGetCurrentTaskHandle(),
                         };
-                        ESP_LOGI( TAG, "Sending ProcessLoop request." );
+                        ESP_LOGD( TAG, "Sending ProcessLoop request." );
 
                         ( void ) MQTTAgent_ProcessLoop( &xGlobalMqttAgentContext, &xCommandInfo );
                         ( void ) ulTaskNotifyTake( pdTRUE, pdMS_TO_TICKS( 10000 ) );
-                        ESP_LOGI( TAG, "ProcessLoop complete." );
+                        ESP_LOGD( TAG, "ProcessLoop complete." );
 
                     }
                     else if ( FD_ISSET( lSockFd, &errorSet ) )

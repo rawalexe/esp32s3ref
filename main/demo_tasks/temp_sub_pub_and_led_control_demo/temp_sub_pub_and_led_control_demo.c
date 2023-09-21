@@ -106,6 +106,36 @@ struct MQTTAgentCommandContext
     void * pArgs;
 };
 
+/**
+ * @brief Defines the structure to use as the command callback context in this
+ * demo.
+ */
+TaskHandle_t blinkLEDTaskHandle = NULL;
+
+int ledTaskIsRunning = 0;
+
+struct LEDControlTaskParams {
+  uint32_t red;
+  uint32_t green;
+  uint32_t blue;
+  uint32_t numBlinks;
+  uint32_t delay;
+};
+
+/* 
+struct ControlLEDCommandContext
+{
+    //MQTTStatus_t xReturnStatus;
+    TaskHandle_t xTaskToNotify;
+    // uint32_t ulNotificationValue;
+    uint32_t state = 0;
+    uint32_t iRval = 0;
+    uint32_t iGval = 0;
+    uint32_t iBval = 0;
+    // void * pArgs;
+};
+*/
+
 /* Global variables ***********************************************************/
 
 /**
@@ -224,6 +254,17 @@ static bool prvSubscribeToTopic( MQTTQoS_t xQoS,
  */
 static void prvTempSubPubAndLEDControlTask( void * pvParameters );
 
+/**
+ * @brief The function that implements the LED control.
+ */
+static void prvBlinkLEDTask( void * pvParameters );
+
+/**
+ * @brief The function that flashes success ( green )
+ */
+static void prvFlashSuccess();
+
+
 /* Static function definitions ************************************************/
 
 static void prvPublishCommandCallback( MQTTAgentCommandContext_t * pxCommandContext,
@@ -298,13 +339,34 @@ static BaseType_t prvWaitForCommandAcknowledgment( uint32_t * pulNotifiedValue )
 static void prvParseIncomingPublish( char * publishPayload,
                                      size_t publishPayloadLength )
 {
+    
+    /* whether to blink or not 0|1 */
+    char * blinkValue = NULL;
     char * outValue = NULL;
-    uint32_t outValueLength = 0U;
-    JSONStatus_t result = JSONSuccess;
-    uint32_t state = 0;
+    char * redValue = NULL;
+    char * greenValue = NULL;
+    char * blueValue = NULL;
+    char * delayValue = NULL;
+    char * numBlinksValue = NULL;
 
-    result = JSON_Validate( ( const char * ) publishPayload,
-                            publishPayloadLength );
+    uint32_t blinkValueLength = 0U;
+    uint32_t redValueLength = 0U;
+    uint32_t greenValueLength = 0U;
+    uint32_t outValueLength = 0U;
+    uint32_t blueValueLength = 0U;
+    uint32_t numBlinksValueLength = 0U;
+    uint32_t delayValueLength = 0U;
+
+    JSONStatus_t result = JSONSuccess;
+    uint32_t doBlink = 0; 
+    uint32_t state = 0;
+    uint32_t iRval = 0;
+    uint32_t iGval = 0;
+    uint32_t iBval = 0;
+    uint32_t iDelay = 1000;
+    uint32_t iNumBlinks = 0; // anything < 1 is loop forever
+
+    result = JSON_Validate( ( const char * ) publishPayload, publishPayloadLength );
 
     if( result == JSONSuccess )
     {
@@ -314,6 +376,50 @@ static void prvParseIncomingPublish( char * publishPayload,
                               sizeof( "led.power" ) - 1,
                               &outValue,
                               ( size_t * ) &outValueLength );
+
+        result = JSON_Search( ( char * ) publishPayload,
+                              publishPayloadLength,
+                              "led.r",
+                              sizeof( "led.r" ) - 1,
+                              &redValue,
+                              ( size_t * ) &redValueLength ); 
+
+        result = JSON_Search( ( char * ) publishPayload,
+                              publishPayloadLength,
+                              "led.g",
+                              sizeof( "led.g" ) - 1,
+                              &greenValue,
+                              ( size_t * ) &greenValueLength );
+                              
+        result = JSON_Search( ( char * ) publishPayload,
+                              publishPayloadLength,
+                              "led.b",
+                              sizeof( "led.b" ) - 1,
+                              &blueValue,
+                              ( size_t * ) &blueValueLength ); 
+
+        result = JSON_Search( ( char * ) publishPayload,
+                              publishPayloadLength,
+                              "led.blink",
+                              sizeof( "led.blink" ) - 1,
+                              &blinkValue,
+                              ( size_t * ) &blinkValueLength );   
+
+ 
+        result = JSON_Search( ( char * ) publishPayload,
+                              publishPayloadLength,
+                              "led.numBlinks",
+                              sizeof( "led.numBlinks" ) - 1,
+                              &numBlinksValue,
+                              ( size_t * ) &numBlinksValueLength );      
+
+        result = JSON_Search( ( char * ) publishPayload,
+                              publishPayloadLength,
+                              "led.delay",
+                              sizeof( "led.delay" ) - 1,
+                              &delayValue,
+                              ( size_t * ) &delayValueLength );     
+                                                                                                                                                                              
     }
     else
     {
@@ -323,21 +429,69 @@ static void prvParseIncomingPublish( char * publishPayload,
 
     if( result == JSONSuccess )
     {
-        /* Convert the extracted value to an unsigned integer value. */
+        // Convert the extracted value to an unsigned integer value.
+        doBlink = ( uint32_t ) strtoul( blinkValue, NULL, 10 );
         state = ( uint32_t ) strtoul( outValue, NULL, 10 );
+        iRval = ( uint32_t ) strtoul( redValue, NULL, 10 );
+        iGval = ( uint32_t ) strtoul( greenValue, NULL, 10 );
+        iBval = ( uint32_t ) strtoul( blueValue, NULL, 10 );
+        iNumBlinks = ( uint32_t ) strtoul( numBlinksValue, NULL, 10 );
+
+
+        ESP_LOGI( TAG, "prvParseIncomingPublish() : delay[%s] : 1",delayValue);
+
+
+        iDelay = ( uint32_t ) strtoul( delayValue, NULL, 10 );
+
+        ESP_LOGI( TAG, "prvParseIncomingPublish() : delay[%lu] : 2",iDelay);
+        
 
         if( state == 1 )
         {
-            app_driver_led_on();
-        }
-        else if( state == 0 )
+            struct LEDControlTaskParams params = {
+                iRval,
+                iGval,
+                iBval,
+                iNumBlinks, // num blinks -1 is forever
+                iDelay
+            }; 
+
+            ESP_LOGI( TAG, "prvParseIncomingPublish() : params : r[%lu] g[%lu] b[%lu] numBlinks[%lu] delay[%lu]",
+                params.red,
+                params.green,
+                params.blue,
+                params.numBlinks,
+                params.delay
+            );
+                
+            
+            if( doBlink == 1 )
+            {
+              xTaskCreate( prvBlinkLEDTask,
+                 "LED_BLINK",
+                 temppubsubandledcontrolconfigTASK_STACK_SIZE,
+                 &params,
+                 temppubsubandledcontrolconfigTASK_PRIORITY,
+                 &blinkLEDTaskHandle );  
+            } else {
+                app_driver_led_on(iRval,iGval,iBval);
+            }
+        } else if( state == 0 )
         {
+            //ESP_LOGE( TAG, "ab to app_driver_led_off" );   
+            if( ledTaskIsRunning == 1)
+            {
+              ESP_LOGI( TAG, "prvParseIncomingPublish() : blinkLEDTaskHandle not null : deleting task" ); 
+              ledTaskIsRunning = 0;
+              vTaskDelete(blinkLEDTaskHandle);
+              ESP_LOGI( TAG, "prvParseIncomingPublish() : blinkLEDTaskHandle not null : DELETED task" );
+            }
             app_driver_led_off();
-        }
+        }        
     }
     else
     {
-        /* JSON is valid, but the publish is not related to LED. */
+        // JSON is valid, but the publish is not related to LED. 
     }
 }
 
@@ -362,7 +516,7 @@ static void prvIncomingPublishCallback( void * pvIncomingPublishCallbackContext,
     }
 
     ESP_LOGI( TAG,
-              "Received incoming publish message %s",
+              "prvIncomingPublishCallback() : Received incoming publish message %s",
               cTerminatedString );
 
     prvParseIncomingPublish( ( char * ) pxPublishInfo->pPayload, pxPublishInfo->payloadLength );
@@ -411,7 +565,7 @@ static bool prvSubscribeToTopic( MQTTQoS_t xQoS,
      * priority of the MQTT agent task is higher than the priority of the task
      * calling this function. */
     ESP_LOGI( TAG,
-              "Sending subscribe request to agent for topic filter: %s with id %d",
+              "prvSubscribeToTopic() : Sending subscribe request to agent for topic filter: %s with id %d",
               pcTopicFilter,
               ( int ) ulNextSubscribeMessageID );
 
@@ -433,18 +587,103 @@ static bool prvSubscribeToTopic( MQTTQoS_t xQoS,
         ( xApplicationDefinedContext.xReturnStatus != MQTTSuccess ) )
     {
         ESP_LOGE( TAG,
-                  "Error or timed out waiting for ack to subscribe message topic %s",
+                  "prvSubscribeToTopic() : Error or timed out waiting for ack to subscribe message topic %s",
                   pcTopicFilter );
     }
     else
     {
         ESP_LOGI( TAG,
-                  "Received subscribe ack for topic %s containing ID %d",
+                  "prvSubscribeToTopic() : MQTT CONNECTED : Received subscribe ack for topic %s containing ID %d.  Turning off LED",
                   pcTopicFilter,
                   ( int ) xApplicationDefinedContext.ulNotificationValue );
-    }
+        }
+        vTaskDelete(blinkLEDTaskHandle);
+        app_driver_led_off();        
+        prvFlashSuccess();
+        app_driver_led_off();
 
     return xCommandAcknowledged;
+}
+
+static void prvBlinkLEDTask( void * args )
+{
+
+ ledTaskIsRunning = 1;
+
+ struct LEDControlTaskParams *params = (struct LEDControlTaskParams *)args;
+
+  uint32_t iRval = (uint32_t) params->red;
+  uint32_t iGval = (uint32_t) params->green;
+  uint32_t iBval = (uint32_t) params->blue;
+  uint32_t iNumBlinks = (uint32_t) params->numBlinks;
+  uint32_t iDelay = (uint32_t) params->delay;
+
+  ESP_LOGI( TAG,
+            "prvBlinkLEDTask() : r[%lu] g[%lu] b[%lu] blinks[%lu] delay [%lu]",
+            iRval,
+            iGval,
+            iBval,
+            iNumBlinks,
+            iDelay );
+
+  // loop forever
+  if( iNumBlinks < 1) {
+    ESP_LOGI( TAG, "prvBlinkLEDTask() : infinite loop" );
+    while (true) {
+      app_driver_led_on(iRval,iGval,iBval);
+      vTaskDelay(iDelay / portTICK_PERIOD_MS); // Delay for some time
+      app_driver_led_off();
+      vTaskDelay(iDelay / portTICK_PERIOD_MS); // Delay for another 1000ms
+    }
+  } else {
+    uint8_t cnt = 0;
+    for(uint8_t i=0;i<iNumBlinks;i++) {
+          ESP_LOGI( TAG,
+            "prvBlinkLEDTask() : blink %d of %lu with delay %lu",
+            i,
+            iNumBlinks,
+            iDelay);
+
+      app_driver_led_on(iRval,iGval,iBval);
+      vTaskDelay(iDelay / portTICK_PERIOD_MS); // Delay for some time
+      app_driver_led_off();
+      vTaskDelay(iDelay / portTICK_PERIOD_MS); // Delay for another 1000ms
+      cnt++;
+    }
+    ESP_LOGI( TAG,"prvBlinkLEDTask() : terminating task");
+    ledTaskIsRunning = 0;
+    vTaskDelete( NULL );
+
+  }
+}
+
+//static void prvFlashSuccess( void * pvParameters )
+static void prvFlashSuccess()
+{
+    struct LEDControlTaskParams params = {
+                (uint32_t) 0,  // r
+                (uint32_t) 25, // g
+                (uint32_t) 0,  // b
+                (uint32_t) 15, // numBlinks -1 is forever
+                (uint32_t) 100 // delay in milliseconds
+                }; 
+
+    ESP_LOGI( TAG, "prvFlashSuccess() : r[%lu] g[%lu] b[%lu] numBlinks[%lu] delay[%lu]",
+    params.red,
+    params.green,
+    params.blue,
+    params.numBlinks,
+    params.delay
+        );
+                
+            
+           
+    xTaskCreate( prvBlinkLEDTask,
+        "LED_BLINK",
+        temppubsubandledcontrolconfigTASK_STACK_SIZE,
+        &params,
+        temppubsubandledcontrolconfigTASK_PRIORITY,
+        &blinkLEDTaskHandle );
 }
 
 static void prvTempSubPubAndLEDControlTask( void * pvParameters )
@@ -463,42 +702,66 @@ static void prvTempSubPubAndLEDControlTask( void * pvParameters )
     uint32_t ulPublishPassCounts = 0;
     uint32_t ulPublishFailCounts = 0;
 
-    pcTaskName = pcTaskGetName( xTaskGetCurrentTaskHandle() );
+    pcTaskName = pcTaskGetName( xTaskGetCurrentTaskHandle() );    
 
-    /* Hardware initialisation */
+    // Hardware initialisation 
     app_driver_init();
 
-    /* Initialize the coreMQTT-Agent event group. */
+    // start LED blinking until our topic subscription ack comes through
+    struct LEDControlTaskParams params = {
+                25,
+                25,
+                25,
+                0, // num blinks -1 is forever
+                1000}; 
+
+    ESP_LOGE( TAG, "prvTempSubPubAndLEDControlTask() : params : r[%lu] g[%lu] b[%lu] numBlinks[%lu] delay[%lu]",
+        params.red,
+        params.green,
+        params.blue,
+        params.numBlinks,
+        params.delay
+    );
+                                       
+    xTaskCreate( prvBlinkLEDTask,
+        "LED_BLINK",
+        temppubsubandledcontrolconfigTASK_STACK_SIZE,
+        &params,
+        temppubsubandledcontrolconfigTASK_PRIORITY,
+        &blinkLEDTaskHandle );  
+
+    // Initialize the coreMQTT-Agent event group. 
     xNetworkEventGroup = xEventGroupCreate();
     xEventGroupSetBits( xNetworkEventGroup,
                         CORE_MQTT_AGENT_OTA_NOT_IN_PROGRESS_BIT );
 
-    /* Register coreMQTT-Agent event handler. */
+    // Register coreMQTT-Agent event handler. 
     xCoreMqttAgentManagerRegisterHandler( prvCoreMqttAgentEventHandler );
 
     xQoS = ( MQTTQoS_t ) temppubsubandledcontrolconfigQOS_LEVEL;
 
-    /* Create a topic name for this task to publish to. */
+    // Create a topic name for this task to publish to. 
     snprintf( pcTopicBuffer,
               temppubsubandledcontrolconfigSTRING_BUFFER_LENGTH,
-              "/filter/%s",
-              pcTaskName );
+              "/blinky/%s",
+              "LED-63A514A7-58CC-48A8-9F32-31EB33498ED8" );
 
-    /* Subscribe to the same topic to which this task will publish.  That will
-     * result in each published message being published from the server back to
-     * the target. */
+    // Subscribe to the same topic to which this task will publish.  That will
+    // result in each published message being published from the server back to
+    // the target. 
     prvSubscribeToTopic( xQoS, pcTopicBuffer );
 
-    /* Configure the publish operation. */
+/*  
+    // Configure the publish operation. 
     memset( ( void * ) &xPublishInfo, 0x00, sizeof( xPublishInfo ) );
     xPublishInfo.qos = xQoS;
     xPublishInfo.pTopicName = pcTopicBuffer;
     xPublishInfo.topicNameLength = ( uint16_t ) strlen( pcTopicBuffer );
     xPublishInfo.pPayload = payloadBuf;
 
-    /* Store the handler to this task in the command context so the callback
-     * that executes when the command is acknowledged can send a notification
-     * back to this task. */
+    // Store the handler to this task in the command context so the callback
+    // that executes when the command is acknowledged can send a notification
+    // back to this task. 
     memset( ( void * ) &xCommandContext, 0x00, sizeof( xCommandContext ) );
     xCommandContext.xTaskToNotify = xTaskGetCurrentTaskHandle();
 
@@ -508,11 +771,11 @@ static void prvTempSubPubAndLEDControlTask( void * pvParameters )
 
     ulValueToNotify = 0UL;
 
-    /* For an infinite number of publishes */
+    // For an infinite number of publishes 
     while( 1 )
     {
-        /* Create a payload to send with the publish message.  This contains
-         * the task name, temperature and the iteration number. */
+        // Create a payload to send with the publish message.  This contains
+        // the task name, temperature and the iteration number. 
 
         temperatureValue = app_driver_temp_sensor_read_celsius();
 
@@ -533,13 +796,13 @@ static void prvTempSubPubAndLEDControlTask( void * pvParameters )
 
         xPublishInfo.payloadLength = ( uint16_t ) strlen( payloadBuf );
 
-        /* Also store the incrementing number in the command context so it can
-         * be accessed by the callback that executes when the publish operation
-         * is acknowledged. */
+        // Also store the incrementing number in the command context so it can
+        // be accessed by the callback that executes when the publish operation
+        // is acknowledged. 
         xCommandContext.ulNotificationValue = ulValueToNotify;
 
-        /* Wait for coreMQTT-Agent task to have working network connection and
-         * not be performing an OTA update. */
+        // Wait for coreMQTT-Agent task to have working network connection and
+        // not be performing an OTA update. 
         xEventGroupWaitBits( xNetworkEventGroup,
                              CORE_MQTT_AGENT_CONNECTED_BIT | CORE_MQTT_AGENT_OTA_NOT_IN_PROGRESS_BIT,
                              pdFALSE,
@@ -551,8 +814,8 @@ static void prvTempSubPubAndLEDControlTask( void * pvParameters )
                   payloadBuf,
                   pcTopicBuffer );
 
-        /* To ensure ulNotification doesn't accidentally hold the expected value
-         * as it is to be checked against the value sent from the callback.. */
+        // To ensure ulNotification doesn't accidentally hold the expected value
+        // as it is to be checked against the value sent from the callback.. 
         ulNotification = ~ulValueToNotify;
 
         xCommandAdded = MQTTAgent_Publish( &xGlobalMqttAgentContext,
@@ -560,8 +823,8 @@ static void prvTempSubPubAndLEDControlTask( void * pvParameters )
                                            &xCommandParams );
         configASSERT( xCommandAdded == MQTTSuccess );
 
-        /* For QoS 1 and 2, wait for the publish acknowledgment.  For QoS0,
-         * wait for the publish to be sent. */
+        // For QoS 1 and 2, wait for the publish acknowledgment.  For QoS0,
+        // wait for the publish to be sent. 
         ESP_LOGI( TAG,
                   "Task %s waiting for publish %"PRIu32" to complete.",
                   pcTaskName,
@@ -569,9 +832,9 @@ static void prvTempSubPubAndLEDControlTask( void * pvParameters )
 
         prvWaitForCommandAcknowledgment( &ulNotification );
 
-        /* The value received by the callback that executed when the publish was
-         * acked came from the context passed into MQTTAgent_Publish() above, so
-         * should match the value set in the context above. */
+        // The value received by the callback that executed when the publish was
+        // acked came from the context passed into MQTTAgent_Publish() above, so
+        // should match the value set in the context above. 
         if( ulNotification == ulValueToNotify )
         {
             ulPublishPassCounts++;
@@ -595,13 +858,14 @@ static void prvTempSubPubAndLEDControlTask( void * pvParameters )
 
         ulValueToNotify++;
 
-        /* Add a little randomness into the delay so the tasks don't remain
-         * in lockstep. */
+        // Add a little randomness into the delay so the tasks don't remain
+        // in lockstep. 
         xTicksToDelay = pdMS_TO_TICKS( temppubsubandledcontrolconfigDELAY_BETWEEN_PUBLISH_OPERATIONS_MS ) +
                         ( rand() % 0xff );
 
         vTaskDelay( xTicksToDelay );
     }
+    */
 
     vTaskDelete( NULL );
 }
@@ -618,39 +882,33 @@ static void prvCoreMqttAgentEventHandler( void * pvHandlerArg,
     switch( lEventId )
     {
         case CORE_MQTT_AGENT_CONNECTED_EVENT:
-            ESP_LOGI( TAG,
-                      "coreMQTT-Agent connected." );
+            ESP_LOGI( TAG,"prvCoreMqttAgentEventHandler() : coreMQTT-Agent connected." );
             xEventGroupSetBits( xNetworkEventGroup,
                                 CORE_MQTT_AGENT_CONNECTED_BIT );
             break;
 
         case CORE_MQTT_AGENT_DISCONNECTED_EVENT:
-            ESP_LOGI( TAG,
-                      "coreMQTT-Agent disconnected. Preventing coreMQTT-Agent "
-                      "commands from being enqueued." );
+            ESP_LOGI( TAG, "prvCoreMqttAgentEventHandler() : coreMQTT-Agent disconnected. Preventing coreMQTT-Agent commands from being enqueued." );
+            
             xEventGroupClearBits( xNetworkEventGroup,
                                   CORE_MQTT_AGENT_CONNECTED_BIT );
             break;
 
         case CORE_MQTT_AGENT_OTA_STARTED_EVENT:
-            ESP_LOGI( TAG,
-                      "OTA started. Preventing coreMQTT-Agent commands from "
-                      "being enqueued." );
+            ESP_LOGI( TAG, "prvCoreMqttAgentEventHandler() : OTA started. Preventing coreMQTT-Agent commands from being enqueued." );
             xEventGroupClearBits( xNetworkEventGroup,
                                   CORE_MQTT_AGENT_OTA_NOT_IN_PROGRESS_BIT );
             break;
 
         case CORE_MQTT_AGENT_OTA_STOPPED_EVENT:
-            ESP_LOGI( TAG,
-                      "OTA stopped. No longer preventing coreMQTT-Agent "
-                      "commands from being enqueued." );
+            ESP_LOGI( TAG, "prvCoreMqttAgentEventHandler() : OTA stopped. No longer preventing coreMQTT-Agent commands from being enqueued." );
             xEventGroupSetBits( xNetworkEventGroup,
                                 CORE_MQTT_AGENT_OTA_NOT_IN_PROGRESS_BIT );
             break;
 
         default:
             ESP_LOGE( TAG,
-                      "coreMQTT-Agent event handler received unexpected event: %"PRIu32"",
+                      "prvCoreMqttAgentEventHandler() : coreMQTT-Agent event handler received unexpected event: %"PRIu32"",
                       lEventId );
             break;
     }
@@ -666,4 +924,5 @@ void vStartTempSubPubAndLEDControlDemo( void )
                  NULL,
                  temppubsubandledcontrolconfigTASK_PRIORITY,
                  NULL );
+               
 }

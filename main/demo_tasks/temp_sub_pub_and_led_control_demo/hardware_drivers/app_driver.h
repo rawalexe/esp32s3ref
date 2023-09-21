@@ -26,7 +26,7 @@ esp_err_t app_driver_init();
 
 float app_driver_temp_sensor_read_celsius();
 
-esp_err_t app_driver_led_on();
+esp_err_t app_driver_led_on(uint32_t r,uint32_t g, uint32_t b);
 
 esp_err_t app_driver_led_off();
 

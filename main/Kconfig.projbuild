@@ -1,4 +1,4 @@
-menu "Featured FreeRTOS IoT Integration"
+menu "UpDog Blinky Light Configuration"
     config APP_WIFI_PROV_SHOW_QR
         bool "Show provisioning QR code"
         default y
